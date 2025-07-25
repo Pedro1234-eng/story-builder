@@ -1,120 +1,99 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { StoryStep, StoryGenerationResponse } from '../types';
+import { QuizSettings, QuizData } from '../types';
 
 if (!process.env.API_KEY) {
-  throw new Error("API_KEY environment variable not set");
+  throw new Error("API_KEY environment variable is not set");
 }
-
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const storyGenerationSchema = {
-  type: Type.OBJECT,
-  properties: {
-    story: {
-      type: Type.STRING,
-      description: "A single paragraph continuing the story. It should be engaging and descriptive.",
-    },
-    choices: {
-      type: Type.ARRAY,
-      description: "Exactly three distinct, imaginative, and logical choices for the user to continue the story. Each choice should lead to a unique narrative path.",
-      items: { type: Type.STRING },
-    },
-  },
-  required: ["story", "choices"],
-};
-
-const generateImage = async (prompt: string): Promise<string> => {
-  try {
-    const response = await ai.models.generateImages({
-      model: 'imagen-3.0-generate-002',
-      prompt: `Epic fantasy illustration, cinematic lighting, highly detailed. A visual representation of: ${prompt}`,
-      config: {
-        numberOfImages: 1,
-        outputMimeType: 'image/jpeg',
-        aspectRatio: '16:9',
-      },
-    });
-
-    if (response.generatedImages && response.generatedImages.length > 0) {
-      const base64ImageBytes: string = response.generatedImages[0].image.imageBytes;
-      return `data:image/jpeg;base64,${base64ImageBytes}`;
-    }
-    throw new Error("No image was generated.");
-  } catch (error) {
-    console.error("Image generation failed, returning placeholder:", error);
-    // Return a placeholder on failure
-    return `https://picsum.photos/seed/${encodeURIComponent(prompt)}/1280/720`;
+const getClassLevelGuidance = (level: string) => {
+  switch (level) {
+    case 'P1': return "P1 (Ages 6-7): Focus on simple single-digit addition and subtraction. Numbers up to 20. Example: 5 + 3, 9 - 2.";
+    case 'P2': return "P2 (Ages 7-8): Two-digit addition/subtraction without carrying/borrowing. Introduce single-digit multiplication basics (2, 5, 10 times tables). Example: 12 + 5, 28 - 11, 3 * 5.";
+    case 'P3': return "P3 (Ages 8-9): Two-digit addition/subtraction with carrying/borrowing. Expand multiplication (up to 10x10) and introduce simple division. Example: 37 + 45, 52 - 28, 7 * 8, 24 / 4.";
+    case 'P4': return "P4 (Ages 9-10): Multi-digit addition/subtraction. Two-digit by one-digit multiplication. More complex division. Example: 345 + 189, 45 * 3, 125 / 5.";
+    case 'P5': return "P5 (Ages 10-11): Multi-digit multiplication (e.g., 2-digit by 2-digit). Long division. Introduction to order of operations (BODMAS/PEMDAS) with two operations. Example: 123 * 24, 456 / 12, 5 + 3 * 2.";
+    case 'P6': return "P6 (Ages 11-12): Complex multi-digit multiplication and division. Order of operations with multiple steps. Introduction to decimals in problems is acceptable. Example: 582 * 47, 2456 / 18, (10 + 5) * 3 - 2.";
+    default: return "General arithmetic for elementary school children.";
   }
 };
 
+export const generateQuiz = async (settings: QuizSettings): Promise<QuizData> => {
+  const { level, operations, numQuestions } = settings;
 
-const generateStoryAndChoices = async (prompt: string): Promise<StoryGenerationResponse> => {
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt,
-    config: {
-      systemInstruction: `You are an interactive storytelling engine. Your goal is to create a branching narrative based on user choices.
-      - Generate a single, compelling story paragraph based on the user's history and latest choice.
-      - Then, provide exactly three distinct, creative, and logical choices for what can happen next.
-      - Ensure your response strictly adheres to the JSON schema provided.
-      - The story should be engaging for all ages.
-      - Do not break the fourth wall or refer to the user directly.`,
-      responseMimeType: "application/json",
-      responseSchema: storyGenerationSchema,
+  const prompt = `
+    You are an intelligent and friendly arithmetic tutor for children aged 6-12.
+    Your task is to generate a set of math problems based on the following criteria.
+
+    - Class Level: ${level}
+    - Age/Complexity Guidance: ${getClassLevelGuidance(level)}
+    - Operation(s) to include: ${operations.join(', ')}
+    - Number of Exercises: ${numQuestions}
+
+    Instructions for generation:
+    1.  Create ${numQuestions} unique math problems that match the specified class level and operations.
+    2.  The "expression" should be a string that can be displayed to the child (e.g., "8 + 5", "5 * (3 + 2)").
+    3.  Calculate the single, final correct answer for each expression.
+    4.  The "instructions" field should contain a short, encouraging message for the student.
+    5.  Return the entire output in the specified JSON format. The difficulty must be strictly appropriate for the class level. Do not include problems that are too simple or too complex for the specified level.
+  `;
+
+  const responseSchema = {
+    type: Type.OBJECT,
+    properties: {
+      questions: {
+        type: Type.ARRAY,
+        description: 'A list of quiz questions.',
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            question_number: {
+              type: Type.INTEGER,
+              description: 'The sequential number of the question.',
+            },
+            expression: {
+              type: Type.STRING,
+              description: 'The mathematical expression as a string.',
+            },
+            correct_answer: {
+              type: Type.NUMBER,
+              description: 'The correct numerical answer.',
+            },
+          },
+          required: ['question_number', 'expression', 'correct_answer'],
+        },
+      },
+      instructions: {
+        type: Type.STRING,
+        description: 'A friendly instruction message for the student.',
+      },
     },
-  });
+    required: ['questions', 'instructions'],
+  };
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: responseSchema,
+        temperature: 1, // Higher temperature for more varied questions
+      },
+    });
 
-  const jsonText = response.text.trim();
-  const parsed = JSON.parse(jsonText);
-  return parsed as StoryGenerationResponse;
-};
-
-export const generateInitialStep = async (protagonist: string, setting: string): Promise<StoryStep> => {
-    const prompt = `Start a new story with the following elements. Generate the first paragraph and three starting choices.
-    - Protagonist: "${protagonist}"
-    - Setting: "${setting}"`;
-
-    const { story, choices } = await generateStoryAndChoices(prompt);
-    const imagePrompt = `${protagonist} in ${setting}. ${story}`;
-    const image = await generateImage(imagePrompt);
-
-    return {
-        id: Date.now(),
-        paragraph: story,
-        image,
-        choices,
-        selectedChoiceIndex: null,
-        promptForImage: imagePrompt,
-    };
-};
-
-export const generateNextStep = async (protagonist: string, setting: string, history: StoryStep[]): Promise<StoryStep> => {
-    const simplifiedHistory = history.map(step => ({
-        paragraph: step.paragraph,
-        choiceMade: step.selectedChoiceIndex !== null ? step.choices[step.selectedChoiceIndex] : "N/A"
-    }));
+    const jsonText = response.text.trim();
+    const quizData: QuizData = JSON.parse(jsonText);
     
-    const latestChoice = simplifiedHistory[simplifiedHistory.length - 1].choiceMade;
-
-    const prompt = `Continue the story based on the history and the user's latest choice.
-    - Protagonist: "${protagonist}"
-    - Setting: "${setting}"
-    - Story History: ${JSON.stringify(simplifiedHistory)}
-    - User's latest choice: "${latestChoice}"
+    if (!quizData.questions || quizData.questions.length === 0) {
+      throw new Error("AI returned no questions. Please try again.");
+    }
     
-    Generate the next story paragraph and three new choices.`;
+    return quizData;
 
-    const { story, choices } = await generateStoryAndChoices(prompt);
-    const imagePrompt = `${protagonist} in ${setting}. ${story}`;
-    const image = await generateImage(imagePrompt);
-
-    return {
-        id: Date.now(),
-        paragraph: story,
-        image,
-        choices,
-        selectedChoiceIndex: null,
-        promptForImage: imagePrompt,
-    };
+  } catch (error) {
+    console.error("Error generating quiz from Gemini API:", error);
+    throw new Error("Failed to generate the quiz. The AI might be busy, please try again in a moment.");
+  }
 };
