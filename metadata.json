@@ -1,0 +1,6 @@
+{
+  "name": "Interactive Storytelling Engine",
+  "description": "A CRUD application that generates a branching, choice-based story based on user input. Create a story, make choices to see it unfold, and even go back to change the path.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
